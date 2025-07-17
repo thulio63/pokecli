@@ -8,13 +8,16 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
+
+	"github.com/thulio63/pokecli/internal"
 )
 
 //interface for any commands we make
 type cliCommand struct {
 	name string
 	description string
-	callback func(p *Config) error
+	callback func(p *Config, c *internal.Cache) error
 }
 
 type Result struct {
@@ -35,21 +38,21 @@ type Config struct {
 //ADD NEW COMMANDS TO MAP IN MAIN()
 
 //called on "exit" command
-func commandExit(p *Config) error {
+func commandExit(p *Config, c *internal.Cache) error {
 	fmt.Println("Closing the Pokedex... Goodbye!")
+
 	os.Exit(0)
 	return nil
 }
 
 //called on "help" command
-func commandHelp(p *Config) error {
+func commandHelp(p *Config, c *internal.Cache) error {
 	commands := make(map[string]string)
 	commands["exit"] = "Exit the Pokedex"
 	commands["help"] = "Displays a help message"
 	commands["map"] = "Retrieves a group of locations"
 	commands["mapb"] = "Retrieves the previous group of locations"
-	//commandNames := []string{"exit", "help"}
-	//commandDescriptions := []string{"Exit the Pokedex", "Displays a help message"}
+
 	fmt.Println("Welcome to the Pokedex!")
 	fmt.Println("Usage:")
 	fmt.Println("")
@@ -62,20 +65,45 @@ func commandHelp(p *Config) error {
 }
 
 //called on "map" command
-func commandMap(p *Config) error {
-	resp, err := http.Get(p.Next)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
+func commandMap(p *Config, c *internal.Cache) error { //currently gets fucked if it reaches the end of the data presumably
+	//check if p.Next is in cache
+	page, found := c.Get(p.Next)
+	//if not, run http request and add data
+	if !found {
+		resp, err := http.Get(p.Next)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		
+		bod, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return err
+		}
+		con := Config{}
+		err = json.Unmarshal(bod, &con)
+		if err != nil {
+			return err
+		}
+		
+		//add data to cache
+		c.Add(p.Next, bod)
 
-	bod, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
+		p.Next = con.Next
+		p.Previous = con.Previous
+		
+		for _, res := range con.Results {
+			fmt.Println(res.Name)
+		}
+		
+		fmt.Println("")
 
+		return nil
+	}
+	//if yes, skip request and read from data
+	bod := page
 	con := Config{}
-	err = json.Unmarshal(bod, &con)
+	err := json.Unmarshal(bod, &con)
 	if err != nil {
 		return err
 	}
@@ -87,29 +115,59 @@ func commandMap(p *Config) error {
 	}
 
 	fmt.Println("")
-
+	
 	return nil
 }
 
 //called on "mapb" command
-func commandMapB(p *Config) error {
-	if p.Previous == "null" {
-		fmt.Println("you're on the first page")
+func commandMapB(p *Config, c *internal.Cache) error {
+	//returns if there is no previous page
+	if p.Previous == "" {
+		fmt.Println("you're on the first page, dumbass")
 		return nil
 	}
-	resp, err := http.Get(p.Previous)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
 
-	bod, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return err
+	//checks if previous page is in cache
+	page, found := c.Get(p.Next)
+
+	//if no, run http request and add
+	if !found {
+		resp, err := http.Get(p.Previous)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+	
+		bod, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return err
+		}
+	
+		con := Config{}
+		err = json.Unmarshal(bod, &con)
+		if err != nil {
+			return err
+		}
+
+		//add data to cache
+		c.Add(p.Previous, bod)
+
+		p.Next = con.Next
+		p.Previous = con.Previous
+		
+		for _, res := range con.Results {
+			fmt.Println(res.Name)
+		}
+	
+		fmt.Println("")
+	
+		return nil
 	}
+	//if yes, skip request and read from data
+	bod := page
 
 	con := Config{}
-	err = json.Unmarshal(bod, &con)
+	err := json.Unmarshal(bod, &con)
 	if err != nil {
 		return err
 	}
@@ -134,7 +192,9 @@ func cleanInput(text string) []string {
 
 func main() {
 	input := bufio.NewScanner(os.Stdin)
-	param := Config{0, "https://pokeapi.co/api/v2/location-area/", "null", []Result {},}
+	param := Config{0, "https://pokeapi.co/api/v2/location-area/", "", []Result {},}
+	cache := internal.NewCache(time.Second * 15)
+	work := &cache
 	commandList := map[string]cliCommand{
 	
 		"exit": {
@@ -165,7 +225,7 @@ func main() {
 		found := false
 		for _, comm := range commandList {
 			if command == comm.name {
-				comm.callback(&param)
+				comm.callback(&param, work)
 				found = true
 			}
 		}
