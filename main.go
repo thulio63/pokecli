@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"os"
 	"strings"
@@ -17,60 +18,7 @@ import (
 type cliCommand struct {
 	name string
 	description string
-	callback func(p *Config, c *internal.Cache, flag string) error
-}
-
-type LocationArea struct {
-	EncounterMethodRates []struct {
-		EncounterMethod struct {
-			Name string `json:"name"`
-			URL  string `json:"url"`
-		} `json:"encounter_method"`
-		VersionDetails []struct {
-			Rate    int `json:"rate"`
-			Version struct {
-				Name string `json:"name"`
-				URL  string `json:"url"`
-			} `json:"version"`
-		} `json:"version_details"`
-	} `json:"encounter_method_rates"`
-	GameIndex int `json:"game_index"`
-	ID        int `json:"id"`
-	Location  struct {
-		Name string `json:"name"`
-		URL  string `json:"url"`
-	} `json:"location"`
-	Name  string `json:"name"`
-	Names []struct {
-		Language struct {
-			Name string `json:"name"`
-			URL  string `json:"url"`
-		} `json:"language"`
-		Name string `json:"name"`
-	} `json:"names"`
-	PokemonEncounters []struct {
-		Pokemon struct {
-			Name string `json:"name"`
-			URL  string `json:"url"`
-		} `json:"pokemon"`
-		VersionDetails []struct {
-			EncounterDetails []struct {
-				Chance          int           `json:"chance"`
-				ConditionValues []interface{} `json:"condition_values"`
-				MaxLevel        int           `json:"max_level"`
-				Method          struct {
-					Name string `json:"name"`
-					URL  string `json:"url"`
-				} `json:"method"`
-				MinLevel int `json:"min_level"`
-			} `json:"encounter_details"`
-			MaxChance int `json:"max_chance"`
-			Version   struct {
-				Name string `json:"name"`
-				URL  string `json:"url"`
-			} `json:"version"`
-		} `json:"version_details"`
-	} `json:"pokemon_encounters"`
+	callback func(p *Config, c *internal.Cache, flag string, pd *internal.PokeDex) error
 }
 
 type Result struct {
@@ -88,12 +36,12 @@ type Config struct {
 	//} `json:"results"`
 }
 
-//ADD NEW COMMANDS TO MAP IN MAIN()
+//ADD NEW COMMANDS TO MAP IN MAIN() AND IN COMMANDHELP
 
 //called on "exit" command
-func commandExit(p *Config, c *internal.Cache, flag string) error {
+func commandExit(p *Config, c *internal.Cache, flag string, pd *internal.PokeDex) error {
 	fmt.Println("")
-	
+
 	fmt.Println("Closing the Pokedex... Goodbye!")
 
 	os.Exit(0)
@@ -101,7 +49,7 @@ func commandExit(p *Config, c *internal.Cache, flag string) error {
 }
 
 //called on "help" command
-func commandHelp(p *Config, c *internal.Cache, flag string) error {
+func commandHelp(p *Config, c *internal.Cache, flag string, pd *internal.PokeDex) error {
 	fmt.Println("")
 
 	commands := make(map[string]string)
@@ -110,6 +58,9 @@ func commandHelp(p *Config, c *internal.Cache, flag string) error {
 	commands["map"] = "Retrieves a group of locations"
 	commands["mapb"] = "Retrieves the previous group of locations"
 	commands["explore"] = "Provides a list of pokemon in a given area"
+	commands["catch"] = "Attempts to catch a pokemon"
+	commands["inspect"] = "View information on pokemon you have previously caught"
+	commands["pokedex"] = "List pokemon you have previously caught"
 
 	fmt.Println("Welcome to the Pokedex!")
 	fmt.Println("Usage:")
@@ -118,12 +69,12 @@ func commandHelp(p *Config, c *internal.Cache, flag string) error {
 		resp := fmt.Sprintf("%s: %s", comm, scrip)
 		fmt.Println(resp)
 	}
-	fmt.Println("")
+
 	return nil
 }
 
 //called on "map" command
-func commandMap(p *Config, c *internal.Cache, flag string) error { //currently gets fucked if it reaches the end of the data presumably
+func commandMap(p *Config, c *internal.Cache, flag string, pd *internal.PokeDex) error { //currently gets fucked if it reaches the end of the data presumably
 	fmt.Println("")
 
 	//check if p.Next is in cache
@@ -158,8 +109,6 @@ func commandMap(p *Config, c *internal.Cache, flag string) error { //currently g
 		for _, res := range con.Results {
 			fmt.Println(res.Name)
 		}
-		
-		fmt.Println("")
 
 		return nil
 	}
@@ -177,14 +126,12 @@ func commandMap(p *Config, c *internal.Cache, flag string) error { //currently g
 	for _, res := range con.Results {
 		fmt.Println(res.Name)
 	}
-
-	fmt.Println("")
 	
 	return nil
 }
 
 //called on "mapb" command
-func commandMapB(p *Config, c *internal.Cache, flag string) error {
+func commandMapB(p *Config, c *internal.Cache, flag string, pd *internal.PokeDex) error {
 	fmt.Println("")
 
 	//returns if there is no previous page
@@ -228,8 +175,6 @@ func commandMapB(p *Config, c *internal.Cache, flag string) error {
 			fmt.Println(res.Name)
 		}
 	
-		fmt.Println("")
-	
 		return nil
 	}
 	//if yes, skip request and read from data
@@ -248,15 +193,14 @@ func commandMapB(p *Config, c *internal.Cache, flag string) error {
 		fmt.Println(res.Name)
 	}
 
-	fmt.Println("")
-
 	return nil
 }
 
-func commandExplore(p *Config, c *internal.Cache, flag string) error {
+func commandExplore(p *Config, c *internal.Cache, flag string, pd *internal.PokeDex) error {
 	// gets data from location-area/{flag}, makes LocationArea struct, returns list of struct.Pokemon.Name 
 	
 	if flag == "" {
+		fmt.Println("")
 		fmt.Println("error - please provide an area to explore")
 		return nil
 	}
@@ -282,12 +226,13 @@ func commandExplore(p *Config, c *internal.Cache, flag string) error {
 		}
 
 		if string(bod) == "Not Found" {
+			fmt.Println("")
 			lost := fmt.Sprintf("error - %s not a valid area to explore", flag)
 			fmt.Println(lost)
 			return nil
 		}
 	
-		var area LocationArea
+		var area internal.LocationArea
 		var names []byte
 		var namesSlice []string
 
@@ -296,6 +241,7 @@ func commandExplore(p *Config, c *internal.Cache, flag string) error {
 			fmt.Println("error -", err)
 			return err
 		}
+		fmt.Println("")
 		for _, v := range area.PokemonEncounters {
 			fmt.Println(v.Pokemon.Name)
 			namesSlice = append(namesSlice, v.Pokemon.Name)
@@ -304,11 +250,8 @@ func commandExplore(p *Config, c *internal.Cache, flag string) error {
 		names = []byte(joinedString)
 		
 		//add data to cache
-		c.Add(flag, names)
-	
-		fmt.Println("")
+		c.Add(flag, names)	
 
-	
 		return nil
 	}
 
@@ -318,8 +261,134 @@ func commandExplore(p *Config, c *internal.Cache, flag string) error {
 		fmt.Println(name)
 	}
 
-	fmt.Println("")
+	return nil
+}
 
+func commandCatch(p *Config, c *internal.Cache, flag string, pd *internal.PokeDex) error {
+	//checks for flag
+	if flag == "" {
+		fmt.Println("error - please attempt to catch a pokemon")
+		return nil
+	}
+	
+	fmt.Printf("\nThrowing a Pokeball at %s...\n", flag)
+	
+	//set odds for capture
+	odds := 100
+	success := 25
+
+	//check if pokemon is in pokedex
+	poke, ok := pd.Caught[flag]
+
+	//if no, run http request for pokemon data
+	if !ok {
+		resp, err := http.Get("https://pokeapi.co/api/v2/pokemon/" + flag)
+		if err != nil {
+			fmt.Println("error -", err)
+			return err
+		}
+		defer resp.Body.Close()
+
+		bod, err := io.ReadAll(resp.Body)
+		if err != nil {
+			fmt.Println("error -", err)
+			return err
+		}
+
+		if string(bod) == "Not Found" {
+			fmt.Println("")
+			fmt.Printf("error - %s not a valid pokemon\n", flag)
+			return nil
+		}
+
+		var target internal.Pokemon
+
+		err = json.Unmarshal(bod, &target)
+		if err != nil {
+			fmt.Println("error -", err)
+			return err
+		}
+
+		sub := target.Base_exp / 100
+
+		if rand.IntN(odds) - sub > success {
+			fmt.Println(flag, "was caught!")
+			//make pokemon visible to user
+			target.Captured = true
+			fmt.Println(flag, "was added to the pokedex!")
+			
+		} else {
+			fmt.Println(flag, "escaped!")
+		}
+
+		//add pokemon to pokedex with correct captured value 
+		pd.Caught[flag] = target
+
+		return nil
+	} else { //pokemon in pokedex
+		sub := poke.Base_exp / 100
+		if rand.IntN(odds) - sub > success {
+			fmt.Println(flag, "was caught!")
+			if !poke.Captured {
+				//set pokemon captured status to true
+				update := pd.Caught[flag]
+				update.Captured = true
+				pd.Caught[flag] = update
+				fmt.Println(flag, "was added to the pokedex!")
+			}
+			poke.Captured = true 
+		} else {
+			fmt.Println(flag, "escaped!")
+		}
+		return nil
+	} 
+}
+
+func commandInspect(p *Config, c *internal.Cache, flag string, pd *internal.PokeDex) error {
+	//checks for flag
+	if flag == "" {
+		fmt.Println("error - please attempt to inspect a pokemon")
+		return nil
+	}
+
+	//check if pokemon is in pokedex
+	poke, ok := pd.Caught[flag]
+
+	if !ok {
+		fmt.Println("you have not caught that pokemon")
+		return nil
+	}
+	fmt.Println("Name:", poke.Name)
+	fmt.Println("Height:", poke.Height)
+	fmt.Println("Weight:", poke.Weight)
+	fmt.Println("Stats:")
+
+	for _, val := range poke.Stats {
+		fmt.Printf(" -%s: %d\n", val.Stat.Name, val.BaseStat)
+	}
+	
+	fmt.Println("Types:")
+
+	for _, myType := range poke.Types {
+		fmt.Println(" -", myType.Type.Name)
+	}
+
+	return nil
+}
+
+func commandPokedex(p *Config, c *internal.Cache, flag string, pd *internal.PokeDex) error {
+	fmt.Println("Your Pokedex:")
+	fmt.Println("")
+	empty := true
+	for _, caught := range pd.Caught {
+		if caught.Captured {
+			empty = false
+			fmt.Println(" -", caught.Name)
+		}
+	}
+	if empty {
+		fmt.Println("You currently posess no Pokemon. Go catch 'em all!")
+	}
 	return nil
 }
 
@@ -331,6 +400,8 @@ func cleanInput(text string) []string {
 
 
 func main() {
+	empty := make(map[string]internal.Pokemon)
+	pokedex := internal.PokeDex{User: "Andrew", Caught: empty}
 	input := bufio.NewScanner(os.Stdin)
 	param := Config{0, "https://pokeapi.co/api/v2/location-area/", "", []Result {},}
 	cache := internal.NewCache(time.Second * 15)
@@ -362,8 +433,24 @@ func main() {
 			description: "Provides a list of pokemon in a given area",
 			callback: commandExplore,
 		},
+		"catch": {
+			name: "catch",
+			description: "Attempts to catch a pokemon",
+			callback: commandCatch,
+		},
+		"inspect": {
+			name: "inspect",
+			description: "View information on pokemon you have previously caught",
+			callback: commandInspect,
+		},
+		"pokedex": {
+			name: "pokedex",
+			description: "List pokemon you have previously caught",
+			callback: commandPokedex,
+		},
 	}
 	for ;; {
+		fmt.Println("")
 		fmt.Print("Pokedex > ")
 		input.Scan()
 		commands := cleanInput(input.Text())
@@ -376,11 +463,12 @@ func main() {
 		found := false
 		for _, comm := range commandList {
 			if command == comm.name {
-				comm.callback(&param, work, commFlag)
+				comm.callback(&param, work, commFlag, &pokedex)
 				found = true
 			}
 		}
 		if !found {
+			fmt.Println("")
 			fmt.Println("Unknown command")
 		}
 		commFlag = ""
